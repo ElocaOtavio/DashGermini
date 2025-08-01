@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import requests
 from io import BytesIO
-import plotly.express as px
 import os
 
 # --- Configuração da Página ---
@@ -30,20 +29,14 @@ def carregar_dados_operacionais(url, headers):
         resposta.raise_for_status()
         arquivo = BytesIO(resposta.content)
         df = pd.read_excel(arquivo)
-        
         for col in ['Data de Criação', 'Data de Finalização']:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce')
-        
-        # CORREÇÃO: Tratar colunas de tempo como Timedelta
         for col in ['Tempo Útil até o Primeiro Atendimento', 'Tempo Útil até o Segundo Atendimento']:
             if col in df.columns:
                 df[col] = pd.to_timedelta(df[col].astype(str), errors='coerce').fillna(pd.Timedelta(seconds=0))
-        
-        # CORREÇÃO: Garantir que a chave de junção seja texto
         if 'Nº Chamado' in df.columns:
             df['Nº Chamado'] = df['Nº Chamado'].astype(str)
-            
         return df
     except Exception as e:
         st.error(f"Erro ao carregar dados operacionais: {e}")
@@ -56,30 +49,21 @@ def carregar_dados_csat(url, headers):
         resposta.raise_for_status()
         arquivo = BytesIO(resposta.content)
         df = pd.read_excel(arquivo)
-        
-        df['Data de Resposta'] = pd.to_datetime(df['Data de Resposta'], errors='coerce')
-        
         coluna_avaliacao = 'Atendimento - CES e CSAT - [ANALISTA] Como você avalia a qualidade do atendimento prestado pelo analista neste chamado?'
-        if coluna_avaliacao not in df.columns:
-            return pd.DataFrame()
-            
+        if coluna_avaliacao not in df.columns: return pd.DataFrame()
         df.rename(columns={coluna_avaliacao: 'Avaliacao_Qualidade'}, inplace=True)
         df['Avaliacao_Qualidade'] = df['Avaliacao_Qualidade'].astype(str)
-        
         df['prioridade_avaliacao'] = df['Avaliacao_Qualidade'].apply(lambda x: 1 if x.strip().startswith('Ótimo') else (2 if x.strip().startswith('Bom') else 3))
         df_sorted = df.sort_values(by=['Código do Chamado', 'prioridade_avaliacao'])
         df_final = df_sorted.drop_duplicates(subset='Código do Chamado', keep='first')
-        
-        # CORREÇÃO: Garantir que a chave de junção seja texto
         if 'Código do Chamado' in df_final.columns:
             df_final['Código do Chamado'] = df_final['Código do Chamado'].astype(str)
-            
         return df_final.drop(columns=['prioridade_avaliacao'])
     except Exception as e:
         st.error(f"Erro ao carregar dados de CSAT: {e}")
         return pd.DataFrame()
 
-# --- Carregamento e Filtros ---
+# --- Carregamento Inicial ---
 URL_OPERACIONAL = st.secrets.get("ELOCA_URL")
 HEADERS_OPERACIONAL = {"DeskManager": st.secrets.get("DESKMANAGER_TOKEN")}
 URL_CSAT = st.secrets.get("CSAT_URL")
@@ -88,33 +72,26 @@ HEADERS_CSAT = {"DeskManager": st.secrets.get("CSAT_TOKEN")}
 df_operacional_raw = carregar_dados_operacionais(URL_OPERACIONAL, HEADERS_OPERACIONAL)
 df_csat_raw = carregar_dados_csat(URL_CSAT, HEADERS_CSAT)
 
+# --- Barra Lateral de Filtros ---
 st.sidebar.header("Filtros Globais")
-
 df_operacional_filtrado = pd.DataFrame()
-df_csat_filtrado = pd.DataFrame()
 
 if not df_operacional_raw.empty:
     date_col_op = 'Data de Finalização'
-    data_min = df_operacional_raw[date_col_op].min().date()
-    data_max = df_operacional_raw[date_col_op].max().date()
+    data_min = df_operacional_raw[date_col_op].dropna().min().date()
+    data_max = df_operacional_raw[date_col_op].dropna().max().date()
     data_selecionada = st.sidebar.date_input("Selecione o Período", value=(data_min, data_max), min_value=data_min, max_value=data_max)
     
     if len(data_selecionada) == 2:
         start_date = pd.to_datetime(data_selecionada[0])
         end_date = pd.to_datetime(data_selecionada[1]).replace(hour=23, minute=59, second=59)
-        
         df_operacional_filtrado = df_operacional_raw[df_operacional_raw[date_col_op].between(start_date, end_date)]
-        if not df_csat_raw.empty:
-            df_csat_filtrado = df_csat_raw[df_csat_raw['Data de Resposta'].between(start_date, end_date)]
     
     lista_analistas = sorted(df_operacional_filtrado['Nome Completo do Operador'].dropna().unique())
     analista_selecionado = st.sidebar.multiselect("Selecione o(s) Analista(s)", options=lista_analistas, default=lista_analistas)
     
     if analista_selecionado:
         df_operacional_filtrado = df_operacional_filtrado[df_operacional_filtrado['Nome Completo do Operador'].isin(analista_selecionado)]
-
-else:
-    st.sidebar.warning("Dados operacionais não disponíveis.")
 
 # --- Navegação e Merge ---
 st.sidebar.title("Navegação")
@@ -123,8 +100,9 @@ pagina_selecionada = st.sidebar.radio("Escolha a página", paginas)
 
 df_merged = pd.DataFrame()
 if not df_operacional_filtrado.empty:
-    if not df_csat_filtrado.empty:
-        df_merged = pd.merge(df_operacional_filtrado, df_csat_filtrado, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
+    if not df_csat_raw.empty:
+        # CORREÇÃO FINAL: Merge do operacional FILTRADO com o CSAT BRUTO (RAW)
+        df_merged = pd.merge(df_operacional_filtrado, df_csat_raw, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
         df_merged['Nota'] = pd.to_numeric(df_merged['Avaliacao_Qualidade'].str.strip().str[0], errors='coerce')
     else:
         df_merged = df_operacional_filtrado.copy()
@@ -177,13 +155,12 @@ elif pagina_selecionada == "Resultados Globais":
         ).reset_index()
         df_diario['TME (minutos)'] = df_diario['TME_seconds'] / 60
         df_diario['TMA (minutos)'] = df_diario['TMA_seconds'] / 60
-        fig_tma_tme = px.bar(df_diario, x='Data de Finalização', y=['TME (minutos)', 'TMA (minutos)'], barmode='group')
+        fig_tma_tme = px.bar(df_diario, x='Data de Finalização', y=['TME (minutos)', 'TMA (minutos)'], barmode='group', labels={'value': 'Tempo (minutos)', 'variable': 'Métrica'})
         st.plotly_chart(fig_tma_tme, use_container_width=True)
         
         st.subheader("Total de Chamados por Dia")
         chamados_dia = df_merged.groupby(df_merged['Data de Finalização'].dt.date).size()
         st.bar_chart(chamados_dia)
-        
     else:
         st.warning("Não há dados para exibir com os filtros selecionados.")
 
@@ -205,7 +182,7 @@ elif pagina_selecionada == "Gráficos Individuais":
 
 elif pagina_selecionada == "Base de Dados":
     st.title("🗂️ Base de Dados Completa")
-    st.subheader("Dados Operacionais (Filtrados)")
+    st.subheader("Dados Operacionais (Após Filtros)")
     st.dataframe(df_operacional_filtrado)
-    st.subheader("Dados de CSAT (Filtrados e Tratados)")
-    st.dataframe(df_csat_filtrado)
+    st.subheader("Dados de CSAT (Brutos, sem filtros)")
+    st.dataframe(df_csat_raw)
