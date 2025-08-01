@@ -14,7 +14,7 @@ import os
 
 st.set_page_config(
 
-    page_title="Dashboard de Indicadores Service Desk",
+    page_title="Dashboard de Indicadores",
 
     page_icon="📊",
 
@@ -28,7 +28,7 @@ def format_timedelta(td):
 
     """Formata um objeto Timedelta para HH:MM:SS."""
 
-    if pd.isna(td):
+    if pd.isna(td) or td.total_seconds() == 0:
 
         return "00:00:00"
 
@@ -42,7 +42,7 @@ def format_timedelta(td):
  
 # --- Funções de Carregamento e Tratamento de Dados ---
 
-@st.cache_data(ttl=3600)  # Cache de 1 hora
+@st.cache_data(ttl=3600)
 
 def carregar_dados_operacionais(url, headers):
 
@@ -62,8 +62,6 @@ def carregar_dados_operacionais(url, headers):
 
                 df[col] = pd.to_datetime(df[col], errors='coerce')
  
-        # CORREÇÃO: Tratar colunas de tempo como Timedelta
-
         for col in ['Tempo Útil até o Primeiro Atendimento', 'Tempo Útil até o Segundo Atendimento']:
 
             if col in df.columns:
@@ -78,7 +76,7 @@ def carregar_dados_operacionais(url, headers):
 
         return pd.DataFrame()
  
-@st.cache_data(ttl=3600)  # Cache de 1 hora
+@st.cache_data(ttl=3600)
 
 def carregar_dados_csat(url, headers):
 
@@ -92,17 +90,11 @@ def carregar_dados_csat(url, headers):
 
         df = pd.read_excel(arquivo)
 
+        df['Data de Resposta'] = pd.to_datetime(df['Data de Resposta'], errors='coerce')
+
         coluna_avaliacao = 'Atendimento - CES e CSAT - [ANALISTA] Como você avalia a qualidade do atendimento prestado pelo analista neste chamado?'
 
-        coluna_comentario = 'Atendimento - CES e CSAT - Deixe aqui um comentário sobre o que achou do atendimento'
- 
-        if coluna_comentario in df.columns:
-
-            df = df.drop(columns=[coluna_comentario])
- 
         if coluna_avaliacao not in df.columns:
-
-            st.warning(f"Coluna de avaliação '{coluna_avaliacao}' não encontrada no CSAT.")
 
             return pd.DataFrame()
 
@@ -128,7 +120,7 @@ def carregar_dados_csat(url, headers):
 
         return pd.DataFrame()
  
-# --- Carregamento Inicial dos Dados ---
+# --- Carregamento Inicial ---
 
 URL_OPERACIONAL = st.secrets.get("ELOCA_URL")
 
@@ -147,12 +139,18 @@ df_csat_raw = carregar_dados_csat(URL_CSAT, HEADERS_CSAT)
 st.sidebar.header("Filtros Globais")
  
 df_operacional = pd.DataFrame()
+
+df_csat = pd.DataFrame()
  
 if not df_operacional_raw.empty:
 
-    data_min = df_operacional_raw['Data de Criação'].min().date()
+    # CORREÇÃO: Filtro de data baseado na Data de Finalização
 
-    data_max = df_operacional_raw['Data de Criação'].max().date()
+    date_col_op = 'Data de Finalização'
+
+    data_min = df_operacional_raw[date_col_op].min().date()
+
+    data_max = df_operacional_raw[date_col_op].max().date()
 
     data_selecionada = st.sidebar.date_input(
 
@@ -172,11 +170,23 @@ if not df_operacional_raw.empty:
 
         end_date = pd.to_datetime(data_selecionada[1]).replace(hour=23, minute=59, second=59)
 
-        df_operacional = df_operacional_raw[df_operacional_raw['Data de Criação'].between(start_date, end_date)]
+        # Filtra as duas planilhas com base nas colunas corretas
+
+        df_operacional = df_operacional_raw[df_operacional_raw[date_col_op].between(start_date, end_date)]
+
+        if not df_csat_raw.empty:
+
+            df_csat = df_csat_raw[df_csat_raw['Data de Resposta'].between(start_date, end_date)]
+
+        else:
+
+            df_csat = df_csat_raw.copy()
 
     else:
 
         df_operacional = df_operacional_raw.copy()
+
+        df_csat = df_csat_raw.copy()
  
     lista_analistas = sorted(df_operacional['Nome Completo do Operador'].dropna().unique())
 
@@ -201,7 +211,10 @@ if not df_operacional_raw.empty:
 else:
 
     st.sidebar.warning("Dados operacionais não disponíveis.")
+
  
+
+
 # --- Navegação e Merge ---
 
 st.sidebar.title("Navegação")
@@ -210,11 +223,11 @@ paginas = ["Visão Geral", "Desempenho por Analista", "Análise Temporal (TMA/TM
 
 pagina_selecionada = st.sidebar.radio("Escolha a página", paginas)
  
-df_merged = pd.DataFrame() 
+df_merged = pd.DataFrame()
 
-if not df_operacional.empty and not df_csat_raw.empty:
+if not df_operacional.empty and not df_csat.empty:
 
-    df_merged = pd.merge(df_operacional, df_csat_raw, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
+    df_merged = pd.merge(df_operacional, df_csat, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
 
     df_merged['Nota'] = pd.to_numeric(df_merged['Avaliacao_Qualidade'].str.strip().str[0], errors='coerce')
 
@@ -226,19 +239,17 @@ else:
 
         df_merged['Nota'] = pd.NA
  
-
-
 # --- Páginas do Dashboard ---
  
 if pagina_selecionada == "Visão Geral":
 
     st.title(" dashboards : Visão Geral dos Indicadores")
 
-    if not df_operacional.empty:
+    if not df_merged.empty:
 
-        total_chamados = df_operacional.shape[0]
+        total_chamados = df_merged.shape[0]
 
-        sla_atendimento_ok = df_operacional[df_operacional['SLA de Primeiro Atendimento Expirado'] == 'Não'].shape[0]
+        sla_atendimento_ok = df_merged[df_merged['SLA de Primeiro Atendimento Expirado'] == 'Não'].shape[0]
 
         percent_sla_atendimento = (sla_atendimento_ok / total_chamados * 100) if total_chamados > 0 else 0
 
@@ -248,7 +259,7 @@ if pagina_selecionada == "Visão Geral":
 
         percent_csat = (csat_satisfeitos / csat_total_avaliacoes * 100) if csat_total_avaliacoes > 0 else 0
 
-        chamados_com_pesquisa = df_operacional[df_operacional['Possui Pesquisa de Satisfação'] == 'Sim'].shape[0]
+        chamados_com_pesquisa = df_merged[df_merged['Possui Pesquisa de Satisfação'] == 'Sim'].shape[0]
 
         percent_resp_pesquisa = (csat_total_avaliacoes / chamados_com_pesquisa * 100) if chamados_com_pesquisa > 0 else 0
  
@@ -272,7 +283,7 @@ if pagina_selecionada == "Visão Geral":
 
             st.subheader("Total de Chamados por Dia")
 
-            chamados_dia = df_operacional.groupby(df_operacional['Data de Criação'].dt.date).size()
+            chamados_dia = df_operacional.groupby(df_operacional['Data de Finalização'].dt.date).size()
 
             st.bar_chart(chamados_dia)
 
@@ -353,7 +364,7 @@ elif pagina_selecionada == "Análise Temporal (TMA/TME)":
 
     if not df_operacional.empty:
 
-        df_diario = df_operacional.groupby(df_operacional['Data de Criação'].dt.date).agg(
+        df_diario = df_operacional.groupby(df_operacional['Data de Finalização'].dt.date).agg(
 
             TME_seconds=('Tempo Útil até o Primeiro Atendimento', lambda x: x.mean().total_seconds()),
 
@@ -361,19 +372,17 @@ elif pagina_selecionada == "Análise Temporal (TMA/TME)":
 
         ).reset_index()
 
-        # Convertendo segundos para minutos para o gráfico
+        df_diario['TME (minutos)'] = df_diario['TME_seconds'] / 60
 
-        df_diario['TME'] = df_diario['TME_seconds'] / 60
+        df_diario['TMA (minutos)'] = df_diario['TMA_seconds'] / 60
 
-        df_diario['TMA'] = df_diario['TMA_seconds'] / 60
+        df_diario.rename(columns={'Data de Finalização': 'Data'}, inplace=True)
 
-        df_diario.rename(columns={'Data de Criação': 'Data'}, inplace=True)
-
-        fig = px.bar(df_diario, x='Data', y=['TME', 'TMA'],
+        fig = px.bar(df_diario, x='Data', y=['TME (minutos)', 'TMA (minutos)'],
 
                      labels={'value': 'Tempo (minutos)', 'variable': 'Métrica'},
 
-                     title="Evolução diária de TME e TMA (em minutos)", barmode='group')
+                     title="Evolução diária de TME e TMA", barmode='group')
 
         st.plotly_chart(fig, use_container_width=True)
 
