@@ -6,7 +6,7 @@ import os
 
 # --- Configuração da Página ---
 st.set_page_config(
-    page_title="Dashboard de Indicadores",
+    page_title="Dashboard de Indicadoreeeeeeeees",
     page_icon="📊",
     layout="wide"
 )
