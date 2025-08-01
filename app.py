@@ -36,7 +36,8 @@ def carregar_dados_operacionais(url, headers):
             if col in df.columns:
                 df[col] = pd.to_timedelta(df[col].astype(str), errors='coerce').fillna(pd.Timedelta(seconds=0))
         if 'Nº Chamado' in df.columns:
-            df['Nº Chamado'] = df['Nº Chamado'].astype(str)
+            # CORREÇÃO FINAL: Remove espaços em branco da chave de junção
+            df['Nº Chamado'] = df['Nº Chamado'].astype(str).str.strip()
         return df
     except Exception as e:
         st.error(f"Erro ao carregar dados operacionais: {e}")
@@ -49,6 +50,7 @@ def carregar_dados_csat(url, headers):
         resposta.raise_for_status()
         arquivo = BytesIO(resposta.content)
         df = pd.read_excel(arquivo)
+        df['Data de Resposta'] = pd.to_datetime(df['Data de Resposta'], errors='coerce')
         coluna_avaliacao = 'Atendimento - CES e CSAT - [ANALISTA] Como você avalia a qualidade do atendimento prestado pelo analista neste chamado?'
         if coluna_avaliacao not in df.columns: return pd.DataFrame()
         df.rename(columns={coluna_avaliacao: 'Avaliacao_Qualidade'}, inplace=True)
@@ -57,7 +59,8 @@ def carregar_dados_csat(url, headers):
         df_sorted = df.sort_values(by=['Código do Chamado', 'prioridade_avaliacao'])
         df_final = df_sorted.drop_duplicates(subset='Código do Chamado', keep='first')
         if 'Código do Chamado' in df_final.columns:
-            df_final['Código do Chamado'] = df_final['Código do Chamado'].astype(str)
+            # CORREÇÃO FINAL: Remove espaços em branco da chave de junção
+            df_final['Código do Chamado'] = df_final['Código do Chamado'].astype(str).str.strip()
         return df_final.drop(columns=['prioridade_avaliacao'])
     except Exception as e:
         st.error(f"Erro ao carregar dados de CSAT: {e}")
@@ -85,7 +88,6 @@ if not df_operacional_raw.empty:
     if len(data_selecionada) == 2:
         start_date = pd.to_datetime(data_selecionada[0])
         end_date = pd.to_datetime(data_selecionada[1]).replace(hour=23, minute=59, second=59)
-        # Filtra APENAS o dataframe operacional pela data
         df_operacional_filtrado = df_operacional_raw[df_operacional_raw[date_col_op].between(start_date, end_date)]
     
     lista_analistas = sorted(df_operacional_filtrado['Nome Completo do Operador'].dropna().unique())
@@ -96,17 +98,15 @@ if not df_operacional_raw.empty:
 
 # --- Navegação e Merge ---
 st.sidebar.title("Navegação")
-# Restaurando a estrutura original de abas
 paginas = ["Desempenho por Analista (Cards)", "Resultados Globais", "Gráficos de CSAT", "Base de Dados"]
 pagina_selecionada = st.sidebar.radio("Escolha a página", paginas)
 
 df_merged = pd.DataFrame()
 if not df_operacional_filtrado.empty:
     if not df_csat_raw.empty:
-        # CORREÇÃO LÓGICA FINAL: Merge do operacional FILTRADO com o CSAT BRUTO (RAW)
         df_merged = pd.merge(df_operacional_filtrado, df_csat_raw, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
         df_merged['Nota'] = pd.to_numeric(df_merged['Avaliacao_Qualidade'].str.strip().str[0], errors='coerce')
-    else: # Caso não haja dados de CSAT, continua com os dados operacionais
+    else:
         df_merged = df_operacional_filtrado.copy()
         if 'Nota' not in df_merged.columns: df_merged['Nota'] = pd.NA
 
@@ -116,34 +116,36 @@ if pagina_selecionada == "Desempenho por Analista (Cards)":
     st.title("🧑‍💻 Desempenho por Analista")
     if not df_merged.empty:
         analistas_filtrados = analista_selecionado
-        num_cols = 3
-        
-        for i in range(0, len(analistas_filtrados), num_cols):
-            cols = st.columns(num_cols)
-            for j in range(num_cols):
-                if i + j < len(analistas_filtrados):
-                    analista = analistas_filtrados[i+j]
-                    with cols[j]:
-                        with st.container(border=True):
-                            st.subheader(f"{analista[:20]}")
-                            df_analista = df_merged[df_merged['Nome Completo do Operador'] == analista]
-                            
-                            atendimentos = df_analista.shape[0]
-                            tma = df_analista['Tempo Útil até o Segundo Atendimento'].median()
-                            
-                            csat_avaliacoes = df_analista['Nota'].count()
-                            csat_satisfeitos = df_analista[df_analista['Nota'] >= 4].shape[0]
-                            percent_csat = (csat_satisfeitos / csat_avaliacoes * 100) if csat_avaliacoes > 0 else 0
-                            
-                            chamados_com_pesquisa = df_analista[df_analista['Possui Pesquisa de Satisfação'] == 'Sim'].shape[0]
-                            percent_resp = (csat_avaliacoes / chamados_com_pesquisa * 100) if chamados_com_pesquisa > 0 else 0
-                            
-                            c1, c2 = st.columns(2)
-                            c1.metric("Atendimentos", f"{atendimentos}")
-                            c2.metric("TMA", format_timedelta(tma))
-                            c3, c4 = st.columns(2)
-                            c3.metric("CSAT", f"{percent_csat:.0f}%")
-                            c4.metric("% Resp. Pesq.", f"{percent_resp:.0f}%")
+        if not analistas_filtrados:
+            st.warning("Por favor, selecione ao menos um analista no filtro lateral.")
+        else:
+            num_cols = 3
+            for i in range(0, len(analistas_filtrados), num_cols):
+                cols = st.columns(num_cols)
+                for j in range(num_cols):
+                    if i + j < len(analistas_filtrados):
+                        analista = analistas_filtrados[i+j]
+                        with cols[j]:
+                            with st.container(border=True):
+                                st.subheader(f"{analista[:20]}")
+                                df_analista = df_merged[df_merged['Nome Completo do Operador'] == analista]
+                                
+                                atendimentos = df_analista.shape[0]
+                                tma = df_analista['Tempo Útil até o Segundo Atendimento'].median()
+                                
+                                csat_avaliacoes = df_analista['Nota'].count()
+                                csat_satisfeitos = df_analista[df_analista['Nota'] >= 4].shape[0]
+                                percent_csat = (csat_satisfeitos / csat_avaliacoes * 100) if csat_avaliacoes > 0 else 0
+                                
+                                chamados_com_pesquisa = df_analista[df_analista['Possui Pesquisa de Satisfação'] == 'Sim'].shape[0]
+                                percent_resp = (csat_avaliacoes / chamados_com_pesquisa * 100) if chamados_com_pesquisa > 0 else 0
+                                
+                                c1, c2 = st.columns(2)
+                                c1.metric("Atendimentos", f"{atendimentos}")
+                                c2.metric("TMA", format_timedelta(tma))
+                                c3, c4 = st.columns(2)
+                                c3.metric("CSAT", f"{percent_csat:.0f}%")
+                                c4.metric("% Resp. Pesq.", f"{percent_resp:.0f}%")
     else:
         st.warning("Não há dados para exibir com os filtros selecionados.")
 
