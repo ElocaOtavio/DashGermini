@@ -6,11 +6,11 @@ import os
 
 # --- Configuração da Página ---
 st.set_page_config(
-    page_title="Teste de CSAT - Correção Final",
+    page_title="Teste de CSAT - Correção Finalíssima",
     layout="wide"
 )
 
-# --- Funções de Carregamento (versão mais recente e corrigida) ---
+# --- Funções ---
 @st.cache_data(ttl=30)
 def carregar_dados_operacionais(url, headers):
     try:
@@ -43,7 +43,23 @@ def carregar_dados_csat(url, headers):
         st.error(f"Erro ao carregar dados de CSAT: {e}")
         return pd.DataFrame()
 
-st.title("🔬 Teste Final de Cálculo de CSAT")
+def extrair_nota_mapeando(avaliacao_str):
+    """Função robusta para extrair nota procurando pelo texto exato."""
+    avaliacao_str = str(avaliacao_str).strip()
+    if avaliacao_str.startswith("5 - Ótimo"):
+        return 5
+    elif avaliacao_str.startswith("4 - Bom"):
+        return 4
+    elif avaliacao_str.startswith("3 - Regular"):
+        return 3
+    elif avaliacao_str.startswith("2 - Ruim"):
+        return 2
+    elif avaliacao_str.startswith("1 - Péssimo"):
+        return 1
+    else:
+        return None
+
+st.title("🔬 Teste Final com Mapeamento Direto de CSAT")
 
 # --- Carregamento ---
 URL_OPERACIONAL = st.secrets.get("ELOCA_URL")
@@ -72,21 +88,13 @@ else:
 
     # --- Merge ---
     st.header("1. Junção (Merge) dos Dados")
-    df_merged = pd.merge(
-        df_operacional_filtrado,
-        df_csat_raw,
-        left_on='Nº Chamado',
-        right_on='Código do Chamado',
-        how='left'
-    )
+    df_merged = pd.merge(df_operacional_filtrado, df_csat_raw, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
     
     # --- CORREÇÃO DEFINITIVA AQUI ---
     if 'Avaliacao_Qualidade' in df_merged.columns:
-        # Usando regex para extrair o primeiro dígito de forma robusta
-        df_merged['Nota'] = df_merged['Avaliacao_Qualidade'].str.extract(r'(\d)', expand=False)
-        df_merged['Nota'] = pd.to_numeric(df_merged['Nota'], errors='coerce')
+        df_merged['Nota'] = df_merged['Avaliacao_Qualidade'].apply(extrair_nota_mapeando)
     
-    st.success(f"Junção das planilhas concluída. Total de {len(df_merged)} registros para os analistas selecionados.")
+    st.success(f"Junção das planilhas concluída.")
     
     # --- Cálculos ---
     st.header("2. Resultados do Cálculo para a Seleção Atual")
