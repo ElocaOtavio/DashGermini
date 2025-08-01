@@ -6,8 +6,6 @@ import requests
 
 from io import BytesIO
 
-import plotly.express as px
-
 import os
  
 # --- Configuração da Página ---
@@ -40,7 +38,7 @@ def format_timedelta(td):
 
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
  
-# --- Funções de Carregamento e Tratamento de Dados ---
+# --- Funções de Carregamento de Dados ---
 
 @st.cache_data(ttl=3600)
 
@@ -67,6 +65,12 @@ def carregar_dados_operacionais(url, headers):
             if col in df.columns:
 
                 df[col] = pd.to_timedelta(df[col].astype(str), errors='coerce').fillna(pd.Timedelta(seconds=0))
+
+        # CORREÇÃO: Garantir que a chave de junção seja texto
+
+        if 'Nº Chamado' in df.columns:
+
+            df['Nº Chamado'] = df['Nº Chamado'].astype(str)
 
         return df
 
@@ -112,6 +116,12 @@ def carregar_dados_csat(url, headers):
 
         df_final = df_sorted.drop_duplicates(subset='Código do Chamado', keep='first')
 
+        # CORREÇÃO: Garantir que a chave de junção seja texto
+
+        if 'Código do Chamado' in df_final.columns:
+
+            df_final['Código do Chamado'] = df_final['Código do Chamado'].astype(str)
+
         return df_final.drop(columns=['prioridade_avaliacao'])
 
     except Exception as e:
@@ -120,7 +130,9 @@ def carregar_dados_csat(url, headers):
 
         return pd.DataFrame()
  
-# --- Carregamento Inicial ---
+
+
+# --- Carregamento e Filtros ---
 
 URL_OPERACIONAL = st.secrets.get("ELOCA_URL")
 
@@ -134,17 +146,13 @@ df_operacional_raw = carregar_dados_operacionais(URL_OPERACIONAL, HEADERS_OPERAC
 
 df_csat_raw = carregar_dados_csat(URL_CSAT, HEADERS_CSAT)
  
-# --- Barra Lateral de Filtros ---
-
 st.sidebar.header("Filtros Globais")
- 
+
 df_operacional = pd.DataFrame()
 
 df_csat = pd.DataFrame()
  
 if not df_operacional_raw.empty:
-
-    # CORREÇÃO: Filtro de data baseado na Data de Finalização
 
     date_col_op = 'Data de Finalização'
 
@@ -152,17 +160,7 @@ if not df_operacional_raw.empty:
 
     data_max = df_operacional_raw[date_col_op].max().date()
 
-    data_selecionada = st.sidebar.date_input(
-
-        "Selecione o Período",
-
-        value=(data_min, data_max),
-
-        min_value=data_min,
-
-        max_value=data_max,
-
-    )
+    data_selecionada = st.sidebar.date_input("Selecione o Período", value=(data_min, data_max), min_value=data_min, max_value=data_max)
 
     if len(data_selecionada) == 2:
 
@@ -170,17 +168,11 @@ if not df_operacional_raw.empty:
 
         end_date = pd.to_datetime(data_selecionada[1]).replace(hour=23, minute=59, second=59)
 
-        # Filtra as duas planilhas com base nas colunas corretas
-
         df_operacional = df_operacional_raw[df_operacional_raw[date_col_op].between(start_date, end_date)]
 
         if not df_csat_raw.empty:
 
             df_csat = df_csat_raw[df_csat_raw['Data de Resposta'].between(start_date, end_date)]
-
-        else:
-
-            df_csat = df_csat_raw.copy()
 
     else:
 
@@ -190,15 +182,7 @@ if not df_operacional_raw.empty:
  
     lista_analistas = sorted(df_operacional['Nome Completo do Operador'].dropna().unique())
 
-    analista_selecionado = st.sidebar.multiselect(
-
-        "Selecione o(s) Analista(s)",
-
-        options=lista_analistas,
-
-        default=lista_analistas
-
-    )
+    analista_selecionado = st.sidebar.multiselect("Selecione o(s) Analista(s)", options=lista_analistas, default=lista_analistas)
 
     if analista_selecionado:
 
@@ -207,19 +191,12 @@ if not df_operacional_raw.empty:
     else:
 
         df_operacional = pd.DataFrame(columns=df_operacional.columns)
-
-else:
-
-    st.sidebar.warning("Dados operacionais não disponíveis.")
-
  
-
-
 # --- Navegação e Merge ---
 
 st.sidebar.title("Navegação")
 
-paginas = ["Visão Geral", "Desempenho por Analista", "Análise Temporal (TMA/TME)", "Análise de CSAT"]
+paginas = ["Visão Geral", "Desempenho por Analista"]
 
 pagina_selecionada = st.sidebar.radio("Escolha a página", paginas)
  
@@ -299,7 +276,6 @@ if pagina_selecionada == "Visão Geral":
 
         st.warning("Não há dados para exibir com os filtros selecionados.")
  
- 
 elif pagina_selecionada == "Desempenho por Analista":
 
     st.title("🧑‍💻 Desempenho por Analista")
@@ -324,13 +300,15 @@ elif pagina_selecionada == "Desempenho por Analista":
 
                         with st.container(border=True):
 
-                            st.subheader(analista)
+                            st.subheader(f"{analista[:20]}...") # Limita o tamanho do nome
 
                             df_analista = df_merged[df_merged['Nome Completo do Operador'] == analista]
 
                             atendimentos = df_analista.shape[0]
 
-                            tma = df_analista['Tempo Útil até o Segundo Atendimento'].mean()
+                            # CORREÇÃO: Usando mediana para TMA
+
+                            tma = df_analista['Tempo Útil até o Segundo Atendimento'].median()
 
                             csat_avaliacoes = df_analista['Nota'].count()
 
@@ -357,70 +335,3 @@ elif pagina_selecionada == "Desempenho por Analista":
     else:
 
         st.warning("Não há dados para exibir com os filtros selecionados.")
- 
-elif pagina_selecionada == "Análise Temporal (TMA/TME)":
-
-    st.title("📈 Análise Temporal: TMA e TME")
-
-    if not df_operacional.empty:
-
-        df_diario = df_operacional.groupby(df_operacional['Data de Finalização'].dt.date).agg(
-
-            TME_seconds=('Tempo Útil até o Primeiro Atendimento', lambda x: x.mean().total_seconds()),
-
-            TMA_seconds=('Tempo Útil até o Segundo Atendimento', lambda x: x.mean().total_seconds())
-
-        ).reset_index()
-
-        df_diario['TME (minutos)'] = df_diario['TME_seconds'] / 60
-
-        df_diario['TMA (minutos)'] = df_diario['TMA_seconds'] / 60
-
-        df_diario.rename(columns={'Data de Finalização': 'Data'}, inplace=True)
-
-        fig = px.bar(df_diario, x='Data', y=['TME (minutos)', 'TMA (minutos)'],
-
-                     labels={'value': 'Tempo (minutos)', 'variable': 'Métrica'},
-
-                     title="Evolução diária de TME e TMA", barmode='group')
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    else:
-
-        st.warning("Não há dados operacionais para exibir com os filtros selecionados.")
- 
-elif pagina_selecionada == "Análise de CSAT":
-
-    st.title("😊 Análise de Satisfação do Cliente (CSAT)")
-
-    if not df_merged.empty and df_merged['Nota'].notna().any():
-
-        st.subheader("Distribuição Geral das Notas")
-
-        dist_notas = df_merged['Nota'].dropna().astype(int).value_counts().sort_index()
-
-        st.bar_chart(dist_notas)
- 
-        st.subheader("Média de Nota por Analista")
-
-        csat_analista = df_merged.dropna(subset=['Nota']).groupby('Nome Completo do Operador').agg(
-
-            Media_Nota=('Nota', 'mean'),
-
-            Total_Avaliacoes=('Nota', 'count')
-
-        ).reset_index().sort_values(by='Media_Nota', ascending=False)
-
-        fig_analista = px.bar(csat_analista, x='Nome Completo do Operador', y='Media_Nota', color='Total_Avaliacoes',
-
-                             title="CSAT por Analista", labels={'Nome Completo do Operador': 'Analista', 'Media_Nota': 'Média da Nota'},
-
-                             color_continuous_scale=px.colors.sequential.Viridis)
-
-        st.plotly_chart(fig_analista, use_container_width=True)
-
-    else:
-
-        st.warning("Não há dados de CSAT para exibir com os filtros selecionados.")
- 
