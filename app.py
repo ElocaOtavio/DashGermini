@@ -6,11 +6,11 @@ import os
 
 # --- Configuração da Página ---
 st.set_page_config(
-    page_title="Teste de Cálculo de CSAT",
+    page_title="Teste de CSAT - Correção Final",
     layout="wide"
 )
 
-# --- Funções de Carregamento de Dados (usando a versão que funcionou) ---
+# --- Funções de Carregamento (versão mais recente e corrigida) ---
 @st.cache_data(ttl=30)
 def carregar_dados_operacionais(url, headers):
     try:
@@ -43,7 +43,7 @@ def carregar_dados_csat(url, headers):
         st.error(f"Erro ao carregar dados de CSAT: {e}")
         return pd.DataFrame()
 
-st.title("🔬 Teste de Cálculo de CSAT")
+st.title("🔬 Teste Final de Cálculo de CSAT")
 
 # --- Carregamento ---
 URL_OPERACIONAL = st.secrets.get("ELOCA_URL")
@@ -63,7 +63,7 @@ else:
     analista_selecionado = st.sidebar.multiselect(
         "Selecione o(s) Analista(s)",
         options=lista_analistas,
-        default=lista_analistas[:3] # Seleciona os 3 primeiros por padrão
+        default=lista_analistas[:3]
     )
     
     df_operacional_filtrado = df_operacional_raw
@@ -79,16 +79,18 @@ else:
         right_on='Código do Chamado',
         how='left'
     )
+    
+    # --- CORREÇÃO DEFINITIVA AQUI ---
     if 'Avaliacao_Qualidade' in df_merged.columns:
-        df_merged['Nota'] = pd.to_numeric(df_merged['Avaliacao_Qualidade'].str.strip().str[0], errors='coerce')
+        # Usando regex para extrair o primeiro dígito de forma robusta
+        df_merged['Nota'] = df_merged['Avaliacao_Qualidade'].str.extract(r'(\d)', expand=False)
+        df_merged['Nota'] = pd.to_numeric(df_merged['Nota'], errors='coerce')
+    
     st.success(f"Junção das planilhas concluída. Total de {len(df_merged)} registros para os analistas selecionados.")
     
     # --- Cálculos ---
     st.header("2. Resultados do Cálculo para a Seleção Atual")
     
-    # Ignorar duplicatas de pesquisa se houver
-    df_merged.drop_duplicates(subset=['Nº Chamado'], inplace=True)
-
     csat_avaliacoes = df_merged['Nota'].count()
     csat_satisfeitos = df_merged[df_merged['Nota'] >= 4].shape[0]
     percent_csat = (csat_satisfeitos / csat_avaliacoes * 100) if csat_avaliacoes > 0 else 0
@@ -106,6 +108,7 @@ else:
 
     st.markdown("---")
     st.header("3. Amostra dos Dados Após a Junção (com nota)")
+    st.write("Verifique se a coluna 'Nota' agora está sendo preenchida corretamente.")
     st.dataframe(df_merged.dropna(subset=['Avaliacao_Qualidade'])[[
         'Nº Chamado', 'Nome Completo do Operador', 'Possui Pesquisa de Satisfação', 
         'Código do Chamado', 'Operador', 'Avaliacao_Qualidade', 'Nota'
