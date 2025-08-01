@@ -14,7 +14,7 @@ import os
 
 st.set_page_config(
 
-    page_title="Dashboard de Indicadores",
+    page_title="Dashboard de Indicadores Service Desk",
 
     page_icon="📊",
 
@@ -22,8 +22,26 @@ st.set_page_config(
 
 )
  
-# --- Funções de Carregamento e Tratamento de Dados ---
+# --- Funções de Utilitário ---
+
+def format_timedelta(td):
+
+    """Formata um objeto Timedelta para HH:MM:SS."""
+
+    if pd.isna(td):
+
+        return "00:00:00"
+
+    total_seconds = int(td.total_seconds())
+
+    hours, remainder = divmod(total_seconds, 3600)
+
+    minutes, seconds = divmod(remainder, 60)
+
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
  
+# --- Funções de Carregamento e Tratamento de Dados ---
+
 @st.cache_data(ttl=3600)  # Cache de 1 hora
 
 def carregar_dados_operacionais(url, headers):
@@ -38,21 +56,19 @@ def carregar_dados_operacionais(url, headers):
 
         df = pd.read_excel(arquivo)
 
-        # Conversão robusta de colunas para tipos corretos
-
         for col in ['Data de Criação', 'Data de Finalização']:
 
             if col in df.columns:
 
                 df[col] = pd.to_datetime(df[col], errors='coerce')
  
+        # CORREÇÃO: Tratar colunas de tempo como Timedelta
+
         for col in ['Tempo Útil até o Primeiro Atendimento', 'Tempo Útil até o Segundo Atendimento']:
 
             if col in df.columns:
 
-                # Força a conversão para número, erros viram NaN, que depois trocamos por 0
-
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                df[col] = pd.to_timedelta(df[col].astype(str), errors='coerce').fillna(pd.Timedelta(seconds=0))
 
         return df
 
@@ -78,6 +94,12 @@ def carregar_dados_csat(url, headers):
 
         coluna_avaliacao = 'Atendimento - CES e CSAT - [ANALISTA] Como você avalia a qualidade do atendimento prestado pelo analista neste chamado?'
 
+        coluna_comentario = 'Atendimento - CES e CSAT - Deixe aqui um comentário sobre o que achou do atendimento'
+ 
+        if coluna_comentario in df.columns:
+
+            df = df.drop(columns=[coluna_comentario])
+ 
         if coluna_avaliacao not in df.columns:
 
             st.warning(f"Coluna de avaliação '{coluna_avaliacao}' não encontrada no CSAT.")
@@ -87,8 +109,6 @@ def carregar_dados_csat(url, headers):
         df.rename(columns={coluna_avaliacao: 'Avaliacao_Qualidade'}, inplace=True)
 
         df['Avaliacao_Qualidade'] = df['Avaliacao_Qualidade'].astype(str)
-
-        # Lógica de desduplicação
 
         df['prioridade_avaliacao'] = df['Avaliacao_Qualidade'].apply(
 
@@ -125,6 +145,8 @@ df_csat_raw = carregar_dados_csat(URL_CSAT, HEADERS_CSAT)
 # --- Barra Lateral de Filtros ---
 
 st.sidebar.header("Filtros Globais")
+ 
+df_operacional = pd.DataFrame()
  
 if not df_operacional_raw.empty:
 
@@ -174,36 +196,25 @@ if not df_operacional_raw.empty:
 
     else:
 
-        df_operacional = pd.DataFrame() # Esvazia o dataframe se nenhum analista for selecionado
+        df_operacional = pd.DataFrame(columns=df_operacional.columns)
 
 else:
 
-    df_operacional = pd.DataFrame()
+    st.sidebar.warning("Dados operacionais não disponíveis.")
+ 
 # --- Navegação e Merge ---
 
 st.sidebar.title("Navegação")
 
-paginas = ["Visão Geral", "Desempenho por Analista", "Análise Temporal (TMA/TME)", "Análise de CSAT", "Base de Dados Completa"]
+paginas = ["Visão Geral", "Desempenho por Analista", "Análise Temporal (TMA/TME)", "Análise de CSAT"]
 
 pagina_selecionada = st.sidebar.radio("Escolha a página", paginas)
  
-# Unindo os dataframes após o filtro de data/analista
+df_merged = pd.DataFrame() 
 
 if not df_operacional.empty and not df_csat_raw.empty:
 
-    df_merged = pd.merge(
-
-        df_operacional,
-
-        df_csat_raw,
-
-        left_on='Nº Chamado',
-
-        right_on='Código do Chamado',
-
-        how='left'
-
-    )
+    df_merged = pd.merge(df_operacional, df_csat_raw, left_on='Nº Chamado', right_on='Código do Chamado', how='left')
 
     df_merged['Nota'] = pd.to_numeric(df_merged['Avaliacao_Qualidade'].str.strip().str[0], errors='coerce')
 
@@ -215,6 +226,8 @@ else:
 
         df_merged['Nota'] = pd.NA
  
+
+
 # --- Páginas do Dashboard ---
  
 if pagina_selecionada == "Visão Geral":
@@ -223,17 +236,11 @@ if pagina_selecionada == "Visão Geral":
 
     if not df_operacional.empty:
 
-        # Cálculos...
-
         total_chamados = df_operacional.shape[0]
 
         sla_atendimento_ok = df_operacional[df_operacional['SLA de Primeiro Atendimento Expirado'] == 'Não'].shape[0]
 
-        sla_solucao_ok = df_operacional[df_operacional['SLA de Solução Expirado'] == 'Não'].shape[0]
-
         percent_sla_atendimento = (sla_atendimento_ok / total_chamados * 100) if total_chamados > 0 else 0
-
-        percent_sla_solucao = (sla_solucao_ok / total_chamados * 100) if total_chamados > 0 else 0
 
         csat_total_avaliacoes = df_merged['Nota'].count()
 
@@ -247,17 +254,15 @@ if pagina_selecionada == "Visão Geral":
  
         st.subheader("Indicadores Gerais da Equipe")
 
-        cols = st.columns(5)
+        cols = st.columns(4)
 
         cols[0].metric(label="Total de Chamados", value=f"{total_chamados}")
 
         cols[1].metric(label="SLA 1º Atendimento", value=f"{percent_sla_atendimento:.1f}%")
 
-        cols[2].metric(label="SLA de Solução", value=f"{percent_sla_solucao:.1f}%")
+        cols[2].metric(label="CSAT Geral", value=f"{percent_csat:.1f}%")
 
-        cols[3].metric(label="CSAT Geral", value=f"{percent_csat:.1f}%")
-
-        cols[4].metric(label="% Resposta Pesquisa", value=f"{percent_resp_pesquisa:.1f}%")
+        cols[3].metric(label="% Resposta Pesquisa", value=f"{percent_resp_pesquisa:.1f}%")
 
         st.markdown("---")
 
@@ -304,13 +309,13 @@ elif pagina_selecionada == "Desempenho por Analista":
 
                     analista = analistas_filtrados[i+j]
 
-                    df_analista = df_merged[df_merged['Nome Completo do Operador'] == analista]
-
                     with cols[j]:
 
                         with st.container(border=True):
 
                             st.subheader(analista)
+
+                            df_analista = df_merged[df_merged['Nome Completo do Operador'] == analista]
 
                             atendimentos = df_analista.shape[0]
 
@@ -330,7 +335,7 @@ elif pagina_selecionada == "Desempenho por Analista":
 
                             c1.metric("Atendimentos", f"{atendimentos}")
 
-                            c2.metric("TMA (min)", f"{tma:.2f}")
+                            c2.metric("TMA", format_timedelta(tma))
 
                             c3, c4 = st.columns(2)
 
@@ -350,11 +355,17 @@ elif pagina_selecionada == "Análise Temporal (TMA/TME)":
 
         df_diario = df_operacional.groupby(df_operacional['Data de Criação'].dt.date).agg(
 
-            TME=('Tempo Útil até o Primeiro Atendimento', 'mean'),
+            TME_seconds=('Tempo Útil até o Primeiro Atendimento', lambda x: x.mean().total_seconds()),
 
-            TMA=('Tempo Útil até o Segundo Atendimento', 'mean')
+            TMA_seconds=('Tempo Útil até o Segundo Atendimento', lambda x: x.mean().total_seconds())
 
         ).reset_index()
+
+        # Convertendo segundos para minutos para o gráfico
+
+        df_diario['TME'] = df_diario['TME_seconds'] / 60
+
+        df_diario['TMA'] = df_diario['TMA_seconds'] / 60
 
         df_diario.rename(columns={'Data de Criação': 'Data'}, inplace=True)
 
@@ -362,7 +373,7 @@ elif pagina_selecionada == "Análise Temporal (TMA/TME)":
 
                      labels={'value': 'Tempo (minutos)', 'variable': 'Métrica'},
 
-                     title="Evolução diária de TME e TMA", barmode='group')
+                     title="Evolução diária de TME e TMA (em minutos)", barmode='group')
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -403,16 +414,4 @@ elif pagina_selecionada == "Análise de CSAT":
     else:
 
         st.warning("Não há dados de CSAT para exibir com os filtros selecionados.")
- 
-elif pagina_selecionada == "Base de Dados Completa":
-
-    st.title("🗂️ Base de Dados Completa")
-
-    st.subheader("Dados Operacionais (Filtrados)")
-
-    st.dataframe(df_operacional)
-
-    st.subheader("Dados de CSAT (Brutos e Tratados)")
-
-    st.dataframe(df_csat_raw)
  
